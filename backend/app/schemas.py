@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from datetime import date
+from typing import List
 
 
 class ProductCreate(BaseModel):
@@ -14,3 +15,12 @@ class ProductCreate(BaseModel):
 class InventoryAdd(BaseModel):
     product_name: str
     quantity_added: int
+
+
+class BulkRestockItem(BaseModel):
+    product_name: str
+    quantity_added: int
+
+
+class BulkRestockRequest(BaseModel):
+    items: List[BulkRestockItem]

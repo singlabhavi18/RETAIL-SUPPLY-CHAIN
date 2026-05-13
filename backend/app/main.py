@@ -7,6 +7,9 @@ import pandas as pd
 
 from app.services.forecast_service import forecast_next_month
 from app.services.stockout_service import predict_stockout
+from app.services.safety_stock_service import calculate_safety_stock
+from app.services.restock_service import get_restock_recommendations, send_restock_alerts
+from app.services.mid_month_stockout_service import predict_mid_month_stockout
 from app.schemas import InventoryAdd
 
 
@@ -296,3 +299,112 @@ def add_to_inventory(data: InventoryAdd, db: Session = Depends(get_db)):
 @app.get("/stockout-risk")
 def stockout_risk(n_days: int = 7, db: Session = Depends(get_db)):
     return predict_stockout(db, n_days)
+
+
+# -------------------------
+# SAFETY STOCK CALCULATION
+# -------------------------
+
+@app.get("/safety-stock")
+def safety_stock(product_names: str = Query(None), db: Session = Depends(get_db)):
+    return calculate_safety_stock(db, product_names)
+
+
+# -------------------------
+# RESTOCK RECOMMENDATIONS
+# -------------------------
+
+@app.get("/restock-recommendations")
+def restock_recommendations(
+    forecast_days: int = Query(7, ge=1, le=30),
+    product_names: str = Query(None),
+    db: Session = Depends(get_db)
+):
+    return get_restock_recommendations(db, forecast_days, product_names)
+
+
+@app.get("/send-restock-alerts")
+def send_restock_alerts_endpoint(
+    forecast_days: int = Query(7, ge=1, le=30),
+    product_names: str = Query(None),
+    send_email: bool = Query(True),
+    db: Session = Depends(get_db)
+):
+    return send_restock_alerts(db, forecast_days, product_names, send_email)
+
+
+# -------------------------
+# MID-MONTH STOCKOUT PREDICTION
+# -------------------------
+
+@app.get("/mid-month-stockout-prediction")
+def mid_month_stockout_prediction(db: Session = Depends(get_db)):
+    return predict_mid_month_stockout(db)
+
+
+# -------------------------
+# BULK RESTOCK
+# -------------------------
+
+@app.post("/bulk-restock")
+def bulk_restock(request: schemas.BulkRestockRequest, db: Session = Depends(get_db)):
+    """
+    Bulk restock multiple products in a single request.
+    Updates inventory for all products in the request.
+    """
+    
+    updated_products = []
+    errors = []
+    
+    try:
+        for item in request.items:
+            product_name = item.product_name.lower().strip()
+            
+            if item.quantity_added <= 0:
+                errors.append({
+                    "product_name": product_name,
+                    "error": "Quantity must be greater than 0"
+                })
+                continue
+            
+            product = db.query(models.Product).filter(
+                models.Product.product_name == product_name
+            ).first()
+            
+            if not product:
+                errors.append({
+                    "product_name": product_name,
+                    "error": "Product not found"
+                })
+                continue
+            
+            inventory = db.query(models.Inventory).filter(
+                models.Inventory.product_id == product.product_id
+            ).first()
+            
+            if not inventory:
+                inventory = models.Inventory(
+                    product_id=product.product_id,
+                    current_stock=item.quantity_added
+                )
+                db.add(inventory)
+            else:
+                inventory.current_stock += item.quantity_added
+            
+            updated_products.append({
+                "product_name": product_name,
+                "quantity_added": item.quantity_added,
+                "updated_stock": inventory.current_stock
+            })
+        
+        db.commit()
+        
+        return {
+            "message": f"Successfully updated {len(updated_products)} products",
+            "updated_products": updated_products,
+            "errors": errors
+        }
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
